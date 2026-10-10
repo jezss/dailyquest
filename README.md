@@ -1,6 +1,6 @@
 # Daily Quest — personal daily goals
 
-A single-user daily goals tracker. Plan a few goals each day, tick them off, see what you got done (including real GitHub activity), and look back over your week. Runs entirely in your browser: no backend, no account. Data is saved in `localStorage`.
+A single-user daily tracker built around your GitHub issues. Each day you work on issues (with a note per issue per day) plus anything else you want to get done, tick things off, see what you got done (including real GitHub activity), and look back over your week or follow one issue across days. Runs entirely in your browser: no backend, no account. Data is saved in `localStorage`, and optionally also to a folder you choose as Parquet files (see *Data folder* below).
 
 ## Run
 

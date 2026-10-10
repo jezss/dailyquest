@@ -75,6 +75,8 @@ Logic functions take and return plain data (`Day`, `AppData`); components call t
 - If `node`/`git` are "not found" right after installing, refresh `$env:Path` from the Machine and User environment variables.
 - Vite's dev server has served **stale modules** after files changed outside the editor tools. If the browser doesn't reflect an edit, restart the dev server.
 - Run scripts with absolute paths; the working directory can change between commands.
+- Multi-line commit messages: PowerShell 5.1 mangles here-strings piped to `git commit -F -` (the message is split into pathspecs). Write the message to a file and use `git commit -F <file>`.
+- No Python on this machine; don't script edits with it.
 
 ## Style
 
