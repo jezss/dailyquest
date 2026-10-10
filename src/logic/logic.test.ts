@@ -2,21 +2,29 @@ import { describe, expect, it } from 'vitest';
 import type { AppData, Day } from '../types';
 import {
   addGoal,
+  addIssueItem,
   carryCandidates,
   carryOver,
   currentStreak,
   dayStats,
   emptyDay,
+  issueIndex,
+  issueLog,
+  linkToIssue,
   moveGoal,
+  moveWithinKind,
+  newGoal,
   putDay,
   removeGoal,
   setGoalStatus,
+  setIssueState,
   togglePin,
   toggleFocus,
+  updateGoal,
 } from './days';
 import { evaluateAchievements } from './achievements';
-import { buildDaySummary, buildWeekSummary } from './summary';
-import { BACKUP_KEY, V1_BACKUP_KEY, freshData, loadData, parseBackup, saveData } from './storage';
+import { buildDaySummary, buildIssueLog, buildWeekSummary } from './summary';
+import { BACKUP_KEY, V1_BACKUP_KEY, V2_BACKUP_KEY, freshData, loadData, migrateData, parseBackup, saveData } from './storage';
 import {
   commitHighlight,
   fetchActivity,
@@ -25,6 +33,8 @@ import {
   safeUrl,
 } from './github';
 import { makeSampleData } from './sample';
+import { inspectFolder, writeFolder } from './folderStore';
+import type { Dir } from './folderStore';
 
 const NOW = new Date(2026, 5, 10, 12).getTime();
 const D = (n: number) => `2026-06-${String(n).padStart(2, '0')}`;
@@ -159,22 +169,61 @@ describe('streak and achievements', () => {
 
 describe('summary', () => {
   it('lists real data only and labels empties', () => {
-    expect(buildDaySummary(emptyDay(D(1)))).toContain('- Nothing recorded yet.');
+    expect(buildDaySummary(emptyDay(D(1)))).toContain('- No issues on this day.');
     let day = addGoal(addGoal(emptyDay(D(1)), 'Ship it', NOW, { source: { type: 'github', repo: 'a/b', number: 9, url: 'https://x/9' } }), 'Open one', NOW);
     day = setGoalStatus(day, day.goals[0].id, 'done', NOW);
     day = { ...day, win: 'Nice' };
     const t = buildDaySummary(day, 'Sam');
     expect(t).toContain("SAM'S DAY");
-    expect(t).toContain('- Ship it (a/b#9 https://x/9)');
-    expect(t).toContain('STILL OPEN');
-    expect(t).toContain('- Open one [not started]');
+    expect(t).toContain('- [done] a/b#9 Ship it');
+    expect(t).toContain('  https://x/9');
+    expect(t).toContain('NOT ON GITHUB');
+    expect(t).toContain('- [not started] Open one');
     expect(t).toContain('Win: Nice');
-    expect(t).toContain('Goals done: 1 of 2');
+    expect(t).toContain('Done: 1 of 2');
     expect(t).not.toContain('FOR TOMORROW');
   });
-  it('week summary totals', () => {
-    const d = done(freshData(), D(1), ['a', 'b']);
-    expect(buildWeekSummary([d.days[D(1)], emptyDay(D(2))])).toContain('- Goals done: 2');
+  it('leads with issues (with their day note), then other work, then reflection', () => {
+    let day = addGoal(emptyDay(D(1)), 'Gym', NOW);
+    day = addIssueItem(day, { type: 'github', repo: 'a/b', number: 9, url: 'https://x/9' }, 'Ship it', NOW);
+    day = updateGoal(day, day.goals[1].id, { note: 'merged\nwaiting on review' });
+    const t = buildDaySummary({ ...day, win: 'Nice' });
+    expect(t.indexOf('ISSUES')).toBeLessThan(t.indexOf('NOT ON GITHUB'));
+    expect(t.indexOf('NOT ON GITHUB')).toBeLessThan(t.indexOf('REFLECTION'));
+    expect(t).toContain('  Note: merged\n        waiting on review');
+    expect(t).toContain('- Issues on this day: 1');
+  });
+  it('labels an empty issue section', () => {
+    expect(buildDaySummary(addGoal(emptyDay(D(1)), 'Gym', NOW))).toContain('- No issues on this day.');
+  });
+  it('week summary groups notes by issue and totals other work', () => {
+    const s = { type: 'github' as const, repo: 'a/b', number: 9, url: 'https://x/9' };
+    let d = freshData();
+    d = withDay(d, D(1), (day) => addIssueItem(addGoal(day, 'Gym', NOW), s, 'Ship it', NOW));
+    d = withDay(d, D(2), (day) => {
+      day = addIssueItem(day, s, 'Ship it', NOW);
+      day = updateGoal(day, day.goals[0].id, { note: 'done at last' });
+      return setGoalStatus(day, day.goals[0].id, 'done', NOW);
+    });
+    const t = buildWeekSummary([d.days[D(1)], d.days[D(2)], emptyDay(D(3))]);
+    expect(t).toContain('- a/b#9 Ship it');
+    expect(t).toMatch(/\[done\] done at last/);
+    expect(t).toContain('- Issues worked: 1 (1 ending the week done)');
+    expect(t).toContain('- Other items done: 0 of 1');
+    expect(buildWeekSummary([emptyDay(D(1))])).toContain('- No issues this week.');
+  });
+  it('builds a per-issue log', () => {
+    const s = { type: 'github' as const, repo: 'a/b', number: 9, url: 'https://x/9' };
+    let d = withDay(freshData(), D(1), (day) => addIssueItem(day, s, 'Ship it', NOW));
+    d = withDay(d, D(2), (day) => {
+      day = addIssueItem(day, s, 'Ship it', NOW);
+      return updateGoal(day, day.goals[0].id, { note: 'went well' });
+    });
+    const t = buildIssueLog(s, 'Ship it', issueLog(d, s));
+    expect(t.split('\n')[0]).toBe('a/b#9 Ship it');
+    expect(t).toContain('(no note)');
+    expect(t).toContain('Note: went well');
+    expect(buildIssueLog(s, 'Ship it', [])).toContain('Never on a day yet.');
   });
 });
 
@@ -213,6 +262,259 @@ describe('storage', () => {
   it('imports only valid backups', () => {
     expect(parseBackup('garbage')).toBeNull();
     expect(parseBackup(JSON.stringify(makeSampleData(NOW)))).not.toBeNull();
+  });
+});
+
+describe('issues as items (v3)', () => {
+  const src = (n: number, state?: 'open' | 'closed') => ({ type: 'github' as const, repo: 'o/r', number: n, url: `https://github.com/o/r/issues/${n}`, ...(state ? { state } : {}) });
+
+  it('kind follows source', () => {
+    expect(newGoal('own thing', NOW).kind).toBe('own');
+    expect(newGoal('issue', NOW, { source: src(1) }).kind).toBe('issue');
+  });
+  it('an issue is on a day at most once', () => {
+    let day = emptyDay(D(1));
+    day = addIssueItem(day, src(1), 'Fix it', NOW);
+    day = addIssueItem(day, src(1), 'Fix it again', NOW);
+    day = addIssueItem(day, src(2), 'Other', NOW);
+    expect(day.goals.map((g) => g.title)).toEqual(['Fix it', 'Other']);
+    expect(day.goals.every((g) => g.kind === 'issue' && g.status === 'todo')).toBe(true);
+  });
+  it('turns an own item into an issue item in place', () => {
+    let day = addGoal(emptyDay(D(1)), 'Spike the parser', NOW);
+    const id = day.goals[0].id;
+    day = linkToIssue(day, id, src(5));
+    expect(day.goals).toHaveLength(1);
+    expect(day.goals[0]).toMatchObject({ id, kind: 'issue', title: 'Spike the parser' });
+    expect(day.goals[0].source?.number).toBe(5);
+    expect(linkToIssue(day, id, src(6))).toBe(day); // already an issue item: unchanged
+  });
+  it('folds an own item into the note when the issue is already on that day', () => {
+    let day = addIssueItem(emptyDay(D(1)), src(5), 'Parser', NOW);
+    day = updateGoal(day, day.goals[0].id, { note: 'started' });
+    day = addGoal(day, 'Try regex', NOW, { note: 'too slow' });
+    day = linkToIssue(day, day.goals[1].id, src(5));
+    expect(day.goals).toHaveLength(1);
+    expect(day.goals[0].note).toBe('started\nTry regex — too slow');
+  });
+  it('builds a per-issue log and an index across days', () => {
+    let d = freshData();
+    d = withDay(d, D(1), (day) => addIssueItem(day, src(1), 'Fix it', NOW));
+    d = withDay(d, D(2), (day) => addGoal(addIssueItem(day, src(1), 'Fix it', NOW), 'no issue', NOW));
+    d = withDay(d, D(3), (day) => {
+      day = addIssueItem(day, src(1), 'Fix it (renamed)', NOW);
+      day = updateGoal(day, day.goals[0].id, { note: 'merged the fix' });
+      return setGoalStatus(day, day.goals[0].id, 'done', NOW);
+    });
+    d = withDay(d, D(3), (day) => addIssueItem(day, src(2), 'Other', NOW));
+    const log = issueLog(d, { repo: 'o/r', number: 1 });
+    expect(log.map((e) => e.date)).toEqual([D(1), D(2), D(3)]);
+    expect(log[2]).toMatchObject({ status: 'done', note: 'merged the fix' });
+    const idx = issueIndex(d);
+    expect(idx.map((i) => i.source.number)).toEqual([1, 2]); // both last worked on D(3); title order breaks the tie
+    const one = idx.find((i) => i.source.number === 1)!;
+    expect(one).toMatchObject({ days: 3, firstDate: D(1), lastDate: D(3), lastStatus: 'done', notes: 1, title: 'Fix it (renamed)' });
+  });
+  it('setIssueState updates snapshots without touching status', () => {
+    let d = freshData();
+    d = withDay(d, D(1), (day) => addIssueItem(day, src(1, 'open'), 'A', NOW));
+    d = withDay(d, D(2), (day) => addIssueItem(day, src(1, 'open'), 'A', NOW));
+    const same = setIssueState(d, { repo: 'o/r', number: 1 }, 'open');
+    expect(same).toBe(d);
+    const next = setIssueState(d, { repo: 'o/r', number: 1 }, 'closed');
+    expect(next.days[D(1)].goals[0].source?.state).toBe('closed');
+    expect(next.days[D(2)].goals[0]).toMatchObject({ status: 'todo' });
+    expect(d.days[D(1)].goals[0].source?.state).toBe('open'); // original untouched
+  });
+  it('setIssueState can be limited to one day so history keeps its old snapshot', () => {
+    let d = freshData();
+    d = withDay(d, D(1), (day) => addIssueItem(day, src(1, 'open'), 'A', NOW));
+    d = withDay(d, D(2), (day) => addIssueItem(day, src(1, 'open'), 'A', NOW));
+    const next = setIssueState(d, { repo: 'o/r', number: 1 }, 'closed', D(2));
+    expect(next.days[D(2)].goals[0].source?.state).toBe('closed');
+    expect(next.days[D(1)]).toBe(d.days[D(1)]);
+    expect(setIssueState(next, { repo: 'o/r', number: 1 }, 'closed', D(2))).toBe(next);
+  });
+  it('moveWithinKind reorders inside one list and skips the other kind', () => {
+    let day = emptyDay(D(1));
+    day = addGoal(day, 'own A', NOW);
+    day = addIssueItem(day, src(1), 'issue 1', NOW);
+    day = addGoal(day, 'own B', NOW);
+    day = addIssueItem(day, src(2), 'issue 2', NOW);
+    const id = (t: string) => day.goals.find((g) => g.title === t)!.id;
+    const titles = (x: Day) => x.goals.map((g) => g.title);
+    expect(titles(moveWithinKind(day, id('own B'), -1))).toEqual(['own B', 'issue 1', 'own A', 'issue 2']);
+    expect(titles(moveWithinKind(day, id('issue 2'), -1))).toEqual(['own A', 'issue 2', 'own B', 'issue 1']);
+    expect(moveWithinKind(day, id('own A'), -1)).toBe(day); // already first of its kind
+    expect(moveWithinKind(day, id('issue 2'), 1)).toBe(day); // already last of its kind
+  });
+  it('carry-over keeps the issue link and kind', () => {
+    let d = freshData();
+    d = withDay(d, D(1), (day) => addIssueItem(day, src(9), 'Carry me', NOW));
+    const id = d.days[D(1)].goals[0].id;
+    d = carryOver(d, D(2), D(1), [id], NOW);
+    expect(d.days[D(2)].goals[0]).toMatchObject({ kind: 'issue', carriedFrom: D(1) });
+    expect(d.days[D(2)].goals[0].source?.number).toBe(9);
+  });
+
+  describe('migration from v2', () => {
+    const v2 = () => {
+      const d = makeSampleData(NOW);
+      const days = JSON.parse(JSON.stringify(d.days)) as AppData['days'];
+      for (const day of Object.values(days)) for (const g of day.goals as unknown as Record<string, unknown>[]) delete g.kind;
+      const first = Object.values(days)[0];
+      first.goals[0] = { ...first.goals[0], source: src(3) };
+      return { ...d, version: 2, days } as unknown as AppData;
+    };
+    it('adds kind from source and keeps everything else', () => {
+      const m = migrateData(v2())!;
+      expect(m.version).toBe(3);
+      const first = Object.values(m.days)[0];
+      expect(first.goals[0].kind).toBe('issue');
+      expect(first.goals[1].kind).toBe('own');
+      expect(migrateData({ ...v2(), version: 1 })).toBeNull();
+    });
+    it('loads v2 browser data, keeps an untouched backup, and imports v2 backups', () => {
+      const m = new Map<string, string>();
+      const st = { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => void m.set(k, v), removeItem: (k: string) => void m.delete(k) };
+      const raw = JSON.stringify(v2());
+      st.setItem('dailyquest.data', raw);
+      const r = loadData(st);
+      expect(r.status).toBe('ok');
+      expect(r.data?.version).toBe(3);
+      expect(m.get(V2_BACKUP_KEY)).toBe(raw);
+      expect(parseBackup(raw)?.version).toBe(3);
+    });
+    it('rejects v3 data whose kind disagrees with source', () => {
+      const d = makeSampleData(NOW);
+      const day = Object.values(d.days)[0];
+      day.goals[0] = { ...day.goals[0], kind: 'issue' }; // issue without a source
+      expect(migrateData(d)).toBeNull();
+    });
+    it('reads a v2 parquet folder and upgrades it to items files on the next write', async () => {
+      const dir = (() => {
+        const files = new Map<string, ArrayBuffer>();
+        return { files, list: async () => [...files.keys()], read: async (n: string) => files.get(n) ?? null, write: async (n: string, b: ArrayBuffer) => void files.set(n, b), remove: async (n: string) => void files.delete(n) };
+      })();
+      // Build a v3 folder, then rewrite it the way v2 stored it.
+      const d = withDay(makeSampleData(NOW), D(1), (day) => addIssueItem(day, src(4, 'open'), 'Legacy issue', NOW));
+      await writeFolder(dir, d, new Map());
+      const old = new Map<string, ArrayBuffer>();
+      const { parquetWriteBuffer } = await import('hyparquet-writer');
+      for (const [name, buf] of dir.files) {
+        if (name === 'meta.parquet') {
+          old.set(name, parquetWriteBuffer({ columnData: [
+            { name: 'version', type: 'INT32', data: [2] }, { name: 'displayName', type: 'STRING', data: [''] },
+            { name: 'goalsSoftLimit', type: 'INT32', data: [5] }, { name: 'sampleLoaded', type: 'BOOLEAN', data: [false] },
+          ] }));
+        } else if (name.endsWith('.items.parquet')) {
+          const { parquetReadObjects } = await import('hyparquet');
+          const rows = (await parquetReadObjects({ file: buf })) as Record<string, unknown>[];
+          const col = (k: string, type: 'STRING' | 'INT32' | 'INT64' | 'BOOLEAN', f: (r: Record<string, unknown>) => unknown) => ({ name: k, type, nullable: true, data: rows.map(f) as never });
+          old.set(name.replace('.items.', '.goals.'), parquetWriteBuffer({ columnData: [
+            col('date', 'STRING', (r) => r.date), col('position', 'INT32', (r) => r.position), col('id', 'STRING', (r) => r.id),
+            col('title', 'STRING', (r) => r.title), col('note', 'STRING', (r) => r.note), col('status', 'STRING', (r) => r.status),
+            col('focus', 'BOOLEAN', (r) => r.focus), col('createdAt', 'INT64', (r) => r.createdAt), col('doneAt', 'INT64', (r) => r.doneAt),
+            col('carriedFrom', 'STRING', (r) => r.carriedFrom), col('carried', 'BOOLEAN', (r) => r.carried),
+            col('sourceRepo', 'STRING', (r) => r.repo), col('sourceNumber', 'INT32', (r) => r.number), col('sourceUrl', 'STRING', (r) => r.url),
+          ] }));
+        } else old.set(name, buf);
+      }
+      dir.files.clear();
+      for (const [n, b] of old) dir.files.set(n, b);
+
+      const r = await inspectFolder(dir);
+      expect(r.status).toBe('ok');
+      if (r.status !== 'ok') return;
+      expect(r.data.version).toBe(3);
+      const legacy = Object.values(r.data.days).flatMap((day) => day.goals).find((g) => g.title === 'Legacy issue');
+      expect(legacy).toMatchObject({ kind: 'issue' });
+      expect(legacy?.source?.number).toBe(4);
+
+      await writeFolder(dir, r.data, new Map());
+      const names = [...dir.files.keys()];
+      expect(names.some((n) => n.endsWith('.goals.parquet'))).toBe(false);
+      expect(names.some((n) => n.endsWith('.items.parquet'))).toBe(true);
+    });
+  });
+});
+
+describe('folder storage (parquet)', () => {
+  const memDir = (): Dir & { files: Map<string, ArrayBuffer>; writes: string[] } => {
+    const files = new Map<string, ArrayBuffer>();
+    const writes: string[] = [];
+    return {
+      files,
+      writes,
+      list: async () => [...files.keys()],
+      read: async (n) => files.get(n) ?? null,
+      write: async (n, b) => void (writes.push(n), files.set(n, b)),
+      remove: async (n) => void files.delete(n),
+    };
+  };
+  const sample = (): AppData => {
+    let d = makeSampleData(NOW);
+    d = withDay(d, '2026-05-31', (day) => {
+      day = addGoal(day, 'From GitHub — "quoted", ünïcode ✓', NOW);
+      day.goals[0] = { ...day.goals[0], kind: 'issue', source: { type: 'github', repo: 'o/r', number: 7, url: 'https://github.com/o/r/issues/7', state: 'closed' }, note: 'line1\nline2' };
+      return { ...day, win: 'a win', reflection: '', highlights: [{ ...prHighlight({ number: 3, title: 'PR', url: 'https://github.com/o/r/pull/3', mergedAt: new Date(NOW).toISOString(), repo: 'o/r' }), id: 'h-1' }] };
+    });
+    return { ...d, settings: { displayName: 'Jez', goalsSoftLimit: 4 } };
+  };
+  const strip = (d: AppData) => ({ ...d, savedAt: undefined });
+
+  it('round-trips every field, including nulls, unicode and several months', async () => {
+    const d = sample();
+    const dir = memDir();
+    await writeFolder(dir, d, new Map(), 123);
+    expect([...dir.files.keys()]).toContain('2026-05.days.parquet');
+    expect([...dir.files.keys()]).toContain('2026-06.days.parquet');
+    const r = await inspectFolder(dir);
+    expect(r.status).toBe('ok');
+    if (r.status === 'ok') {
+      expect(r.data.savedAt).toBe(123);
+      expect(strip(r.data)).toEqual(strip(d));
+    }
+  });
+  it('an empty folder is empty, and an empty app round-trips', async () => {
+    const dir = memDir();
+    expect((await inspectFolder(dir)).status).toBe('empty');
+    await writeFolder(dir, freshData(), new Map());
+    const r = await inspectFolder(dir);
+    expect(r.status).toBe('ok');
+  });
+  it('only rewrites months that changed', async () => {
+    const d = sample();
+    const dir = memDir();
+    const cache = new Map();
+    await writeFolder(dir, d, cache);
+    dir.writes.length = 0;
+    const changed = withDay(d, '2026-06-10', (day) => ({ ...day, win: 'edited' }));
+    await writeFolder(dir, changed, cache);
+    expect(dir.writes.filter((n) => n.startsWith('2026-05'))).toEqual([]);
+    expect(dir.writes).toContain('2026-06.days.parquet');
+  });
+  it('removes files for erased months and leaves other files alone', async () => {
+    const dir = memDir();
+    await writeFolder(dir, sample(), new Map());
+    dir.files.set('notes.txt', new ArrayBuffer(1));
+    await writeFolder(dir, freshData(), new Map());
+    expect([...dir.files.keys()].sort()).toEqual(['meta.parquet', 'notes.txt']);
+  });
+  it('unreadable or newer folders are reported, never overwritten', async () => {
+    const dir = memDir();
+    await writeFolder(dir, sample(), new Map());
+    dir.files.set('2026-06.days.parquet', new Uint8Array([1, 2, 3]).buffer);
+    const bad = await inspectFolder(dir);
+    expect(bad.status).toBe('unreadable');
+    const noMeta = memDir();
+    await writeFolder(noMeta, sample(), new Map());
+    noMeta.files.delete('meta.parquet');
+    expect((await inspectFolder(noMeta)).status).toBe('unreadable');
+    const newer = memDir();
+    await writeFolder(newer, { ...freshData(), version: 99 }, new Map());
+    const r = await inspectFolder(newer);
+    expect(r.status === 'unreadable' && /newer version/.test(r.message)).toBe(true);
   });
 });
 

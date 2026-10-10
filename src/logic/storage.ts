@@ -3,7 +3,8 @@ import type { AppData, Day } from '../types';
 export const STORAGE_KEY = 'dailyquest.data';
 export const BACKUP_KEY = 'dailyquest.corrupt-backup';
 export const V1_BACKUP_KEY = 'dailyquest.v1-team-backup';
-export const CURRENT_VERSION = 2;
+export const V2_BACKUP_KEY = 'dailyquest.v2-backup';
+export const CURRENT_VERSION = 3;
 
 export type LoadStatus = 'ok' | 'fresh' | 'migrated' | 'corrupt' | 'unavailable';
 export interface LoadResult {
@@ -24,7 +25,14 @@ function defaultStore(): Store | null {
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
-function validDay(date: string, v: unknown): v is Day {
+/** v3 goals carry an explicit `kind`, and an issue item must have a source (an own item must not). */
+function validGoal(g: unknown, version: number): boolean {
+  if (!isObj(g) || typeof g.id !== 'string' || typeof g.title !== 'string' || typeof g.status !== 'string') return false;
+  if (version < 3) return true;
+  return (g.kind === 'issue' || g.kind === 'own') && (g.kind === 'issue') === isObj(g.source);
+}
+
+function validDay(date: string, v: unknown, version: number): v is Day {
   return (
     isObj(v) &&
     v.date === date &&
@@ -34,17 +42,35 @@ function validDay(date: string, v: unknown): v is Day {
     typeof v.reflection === 'string' &&
     typeof v.tomorrow === 'string' &&
     Array.isArray(v.goals) &&
-    v.goals.every((g) => isObj(g) && typeof g.id === 'string' && typeof g.title === 'string' && typeof g.status === 'string') &&
+    v.goals.every((g) => validGoal(g, version)) &&
     Array.isArray(v.highlights) &&
     v.highlights.every((h) => isObj(h) && typeof h.key === 'string' && typeof h.title === 'string')
   );
 }
 
+function validShape(v: unknown, version: number): boolean {
+  if (!isObj(v) || v.version !== version) return false;
+  if (!isObj(v.days) || !Object.entries(v.days).every(([k, d]) => validDay(k, d, version))) return false;
+  return isObj(v.settings) && typeof v.settings.displayName === 'string' && typeof v.settings.goalsSoftLimit === 'number';
+}
+
 export function validateData(v: unknown): v is AppData {
-  if (!isObj(v) || v.version !== CURRENT_VERSION) return false;
-  if (!isObj(v.days) || !Object.entries(v.days).every(([k, d]) => validDay(k, d))) return false;
-  if (!isObj(v.settings) || typeof v.settings.displayName !== 'string' || typeof v.settings.goalsSoftLimit !== 'number') return false;
-  return true;
+  return validShape(v, CURRENT_VERSION);
+}
+
+/**
+ * Brings older saved data up to the current version, or returns null if it is not valid data of a version we know.
+ * v2 -> v3: every goal gets a `kind` (`issue` when it was linked to a GitHub issue, otherwise `own`).
+ */
+export function migrateData(v: unknown): AppData | null {
+  if (validateData(v)) return v;
+  if (!validShape(v, 2)) return null;
+  const old = v as unknown as AppData;
+  const days: Record<string, Day> = {};
+  for (const [date, day] of Object.entries(old.days)) {
+    days[date] = { ...day, goals: day.goals.map((g) => ({ ...g, kind: g.source ? 'issue' : 'own' })) };
+  }
+  return { ...old, version: CURRENT_VERSION, days };
 }
 
 export function freshData(): AppData {
@@ -71,8 +97,17 @@ export function loadData(store: Store | null = defaultStore()): LoadResult {
       }
       return { data: null, status: 'migrated', message: 'Your earlier team-standup data was kept as a backup in this browser.' };
     }
-    if (!validateData(parsed)) throw new Error('Saved data has an unexpected shape.');
-    return { data: parsed, status: 'ok' };
+    const data = migrateData(parsed);
+    if (!data) throw new Error('Saved data has an unexpected shape.');
+    if (isObj(parsed) && parsed.version === 2) {
+      // Keep the untouched v2 copy; the next save writes v3.
+      try {
+        store.setItem(V2_BACKUP_KEY, raw);
+      } catch {
+        /* ignore */
+      }
+    }
+    return { data, status: 'ok' };
   } catch (e) {
     try {
       store.setItem(BACKUP_KEY, raw);
@@ -105,11 +140,11 @@ export function clearAll(store: Store | null = defaultStore()): boolean {
   }
 }
 
-/** Parse a user-supplied backup file. Returns null when it is not valid v2 data. */
+/** Parse a user-supplied backup file (current or v2). Returns null when it is not valid data. */
 export function parseBackup(text: string): AppData | null {
   try {
-    const v: unknown = JSON.parse(text);
-    return validateData(v) ? { ...v, savedAt: undefined } : null;
+    const data = migrateData(JSON.parse(text) as unknown);
+    return data ? { ...data, savedAt: undefined } : null;
   } catch {
     return null;
   }

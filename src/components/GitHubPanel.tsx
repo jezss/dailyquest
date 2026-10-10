@@ -1,20 +1,19 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Check, CircleDot, ExternalLink, GitCommit, GitMerge, Plus, RefreshCw, Star } from 'lucide-react';
-import type { Day, GoalSource, Highlight } from '../types';
+import { Check, CircleDot, ExternalLink, GitCommit, GitMerge, RefreshCw, Star } from 'lucide-react';
+import type { Day, Highlight } from '../types';
 import { Button, Card } from '../ui';
 import {
   GitHubError,
   commitHighlight,
   fetchActivity,
   issueHighlight,
-  issueSource,
   parseConfig,
   prHighlight,
   safeUrl,
 } from '../logic/github';
 import type { GhActivity, GitHubConfig } from '../logic/github';
-import { hasSource, isPinned } from '../logic/days';
+import { isPinned } from '../logic/days';
 import { startOfDayMs, toISODate } from '../logic/util';
 
 type State =
@@ -142,12 +141,14 @@ function Row({
 
 interface PanelProps {
   day: Day;
-  onAddGoal: (title: string, source: GoalSource) => void;
   onTogglePin: (h: Omit<Highlight, 'id'>) => void;
 }
 
-/** Read-only GitHub activity for today. Everything shown is a choice: nothing is added or ticked automatically. */
-export function GitHubPanel({ day, onAddGoal, onTogglePin }: PanelProps) {
+/**
+ * Read-only GitHub activity for today: what got done and your commits. (Assigned issues live in the Issues card.)
+ * Everything shown is a choice: nothing is added or ticked automatically.
+ */
+export function GitHubPanel({ day, onTogglePin }: PanelProps) {
   const { state, refresh } = useGitHub();
   if (state.phase === 'loading-config') return null;
 
@@ -201,32 +202,6 @@ export function GitHubPanel({ day, onAddGoal, onTogglePin }: PanelProps) {
       {a && (
         <div className="stack">
           <p className="muted">Signed in as <strong>{a.username}</strong>{state.at ? ` · updated ${ago(new Date(state.at).toISOString())}` : ''}</p>
-
-          <section aria-label="Assigned to me">
-            <h4 className="gh-h">Assigned to me ({a.assigned.length})</h4>
-            {a.assigned.length === 0 ? (
-              <p className="muted">No open issues assigned to you.</p>
-            ) : (
-              <ul className="gh-list">
-                {a.assigned.map((i) => {
-                  const added = hasSource(day, i);
-                  return (
-                    <Row
-                      key={`${i.repo}#${i.number}`}
-                      title={`#${i.number} ${i.title}`}
-                      url={i.url}
-                      meta={<>{i.repo} {i.labels.map((l) => <span key={l} className="tag">{l}</span>)}</>}
-                      actions={
-                        <Button size="sm" variant={added ? 'secondary' : 'primary'} disabled={added} icon={added ? <Check size={14} aria-hidden /> : <Plus size={14} aria-hidden />} onClick={() => onAddGoal(i.title, issueSource(i))}>
-                          {added ? 'In goals' : 'Add as goal'}
-                        </Button>
-                      }
-                    />
-                  );
-                })}
-              </ul>
-            )}
-          </section>
 
           <section aria-label="Done today on GitHub">
             <h4 className="gh-h">Done today on GitHub</h4>

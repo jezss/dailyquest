@@ -21,9 +21,11 @@ src/types.ts            data models (Day, Goal, Highlight, AppData…)
 src/logic/              pure, tested logic — put rules here, not in components
   days.ts               goals, carry-over, focus, pinning, stats, streak
   achievements.ts       achievements computed from saved days
-  summary.ts            Markdown day/week summaries
+  summary.ts            Markdown day/week summaries and per-issue logs (issues first, then other work, then reflection)
   github.ts             read-only GitHub client + config parsing
   storage.ts            versioned localStorage load/save/validate/migrate
+  parquetCodec.ts       AppData <-> Parquet file set (pure, tested)
+  folderStore.ts        folder read/write/sync over a small `Dir` interface + File System Access helpers
   sample.ts             optional sample week
   util.ts               dates (local-time ISO strings) and ids
 src/store.tsx           reducer + persistence (single source of truth)
@@ -36,6 +38,7 @@ Logic functions take and return plain data (`Day`, `AppData`); components call t
 
 ## Product rules — do not break these
 
+- **Today is issues-first.** Assigned issues are only *offered* ("Work on today"); an issue joins a day only through an explicit click. Today splits `day.goals` by `kind` into the Issues and Not-on-GitHub lists, so reorder with `moveWithinKind`, not `moveGoal`.
 - **Nothing is marked done automatically.** Goal status changes only from an explicit user action. A GitHub issue closing may *suggest* "Mark done"; it never changes the goal.
 - **Achievements and streaks are derived from saved records only.** Never award or fake them. Skipped goals never count against the user; a quiet morning must not break the streak.
 - **GitHub is read-only.** Only `GET` requests. Never add code that creates, edits, comments on or closes anything on GitHub.
@@ -46,8 +49,10 @@ Logic functions take and return plain data (`Day`, `AppData`); components call t
 
 ## Persistence and migrations
 
-- Saved data is `version: 2` under the `dailyquest.data` localStorage key. Add new fields as **optional** where possible. For a breaking change, bump `CURRENT_VERSION`, add a migration in `storage.ts`, and add tests.
-- Unreadable data must never be overwritten (a backup is kept under `dailyquest.corrupt-backup`). Old v1 team-standup data is preserved under `dailyquest.v1-team-backup`.
+- Saved data is `version: 3` under the `dailyquest.data` localStorage key. Add new fields as **optional** where possible. For a breaking change, bump `CURRENT_VERSION`, add a step to `migrateData` in `storage.ts` (it must also work for backups and the Parquet folder), and add tests.
+- Unreadable data must never be overwritten (a backup is kept under `dailyquest.corrupt-backup`). Old v1 team-standup data is preserved under `dailyquest.v1-team-backup`; the untouched v2 copy under `dailyquest.v2-backup`.
+- **Items:** a day's `goals` are items with `kind: 'issue' | 'own'`. `kind` always follows `source` (`newGoal` derives it; `validateData` rejects a mismatch). An issue appears at most once per day (`addIssueItem`); its `note` is that day's note about the issue, and `issueLog` / `issueIndex` read an issue's history across days. `source.state` is a snapshot of what GitHub last said, never live data and never a reason to change a goal's status. `linkToIssue` turns an own item into a note on an issue.
+- **Data folder (optional, Chrome/Edge):** the user can pick a folder (File System Access API; handle kept in IndexedDB). Data is written there as Parquet — `meta.parquet` plus `YYYY-MM.{days,items,highlights}.parquet` (v2 folders used `.goals.parquet`; they are still read and the old files are removed on the next write) (`parquetCodec.ts`, `folderStore.ts`). `localStorage` stays as a write-through cache and fallback. Rules: a folder that can't be read (or was written by a newer version) is **never written to**; "Saved" with a folder connected means the folder write succeeded; only changed months are rewritten; only files matching `MANAGED_FILE` are ever deleted. A schema change must update the codec's column lists, the version check and the round-trip test.
 - `validateData` is strict on purpose. If you change the `Day`/`Goal`/`Highlight` shape, update validation and the sample/test fixtures.
 
 ## GitHub integration and secrets
@@ -74,7 +79,7 @@ Logic functions take and return plain data (`Day`, `AppData`); components call t
 ## Style
 
 - Match the surrounding code: small pure functions, explicit types, no unused imports/locals (`noUnusedLocals` is on), comments only where the *why* isn't obvious.
-- No new runtime dependencies without a strong reason (current: `react`, `react-dom`, `lucide-react`). Icons come from `lucide-react` (it has no brand icons — don't look for a GitHub logo).
+- No new runtime dependencies without a strong reason (current: `react`, `react-dom`, `lucide-react`, plus `hyparquet` / `hyparquet-writer` for the data folder — small pure-JS Parquet read/write, chosen over DuckDB-WASM). Icons come from `lucide-react` (it has no brand icons — don't look for a GitHub logo).
 - Don't add a backend, accounts, analytics or any third-party calls. The only network access is the read-only GitHub client.
 
 ## Git

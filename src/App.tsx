@@ -15,7 +15,7 @@ export type View =
   | { name: 'settings' };
 
 function Shell() {
-  const { data, saveState, loadStatus, loadMessage, resetEverything, dismissNotice } = useStore();
+  const { data, saveState, loadStatus, loadMessage, resetEverything, dismissNotice, folder, reconnectFolder } = useStore();
   const [view, setView] = useState<View>({ name: 'today' });
   const go = (v: View) => {
     setView(v);
@@ -78,10 +78,17 @@ function Shell() {
           ))}
         </nav>
         <span className={`save-state ${saveState}`} role="status">
-          {saveState === 'saved' ? (<><CheckCircle2 size={16} aria-hidden /> Saved in this browser</>) : saveState === 'failed' ? (<><TriangleAlert size={16} aria-hidden /> Not saved — storage unavailable</>) : 'Loading…'}
+          {saveState === 'saved' ? (<><CheckCircle2 size={16} aria-hidden /> {folder.phase === 'connected' ? `Saved to folder “${folder.name}”` : 'Saved in this browser'}</>) : saveState === 'failed' ? (<><TriangleAlert size={16} aria-hidden /> {folder.phase === 'connected' ? 'Not saved to your folder' : 'Not saved — storage unavailable'}</>) : 'Loading…'}
         </span>
       </header>
       <main id="main" className="page" tabIndex={-1}>
+        {folder.phase === 'needs-permission' && (
+          <div className="banner warn" role="alert">
+            <TriangleAlert size={20} aria-hidden />
+            <p>Your data folder “{folder.name}” needs permission again. Until then, changes are only saved in this browser.</p>
+            <Button onClick={() => void reconnectFolder()}>Reconnect folder</Button>
+          </div>
+        )}
         {loadStatus === 'unavailable' && (
           <div className="banner warn" role="alert">
             <TriangleAlert size={20} aria-hidden />

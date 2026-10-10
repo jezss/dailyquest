@@ -5,10 +5,19 @@ export interface GoalSource {
   repo: string; // owner/name
   number: number;
   url: string;
+  state?: 'open' | 'closed'; // what GitHub said when this was last seen — a snapshot, never a live value
 }
 
+/** `issue` items are linked to a GitHub issue (and always have `source`); `own` items live only here. */
+export type ItemKind = 'issue' | 'own';
+
+/**
+ * One thing on one day. For an issue item, `note` is that day's note about the issue, so an issue's history is the
+ * notes of every day it appears on. (Named Goal for historical reasons; stored as "items".)
+ */
 export interface Goal {
   id: string;
+  kind: ItemKind;
   title: string;
   note: string;
   status: GoalStatus;

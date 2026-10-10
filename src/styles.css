@@ -340,5 +340,22 @@ h4.gh-h { cursor: default; }
 .badge.locked { opacity: .6; filter: grayscale(.8); }
 ul.badge-grid { list-style: none; padding: 0; margin: 0; }
 .tag a, a.tag { color: inherit; text-decoration: none; }
-@media (max-width: 1000px) { .today-grid { grid-template-columns: 1fr; } .side-col { position: static; } }
+@media (max-width: 1000px) { .today-grid { grid-template-columns: minmax(0, 1fr); } .side-col { position: static; } }
 @media (max-width: 640px) { .week-strip { gap: .25rem; } .week-day strong { font-size: 1.2rem; } .ring { width: 120px; height: 120px; } }
+/* Issues-first Today */
+.assigned { margin-top: 1rem; }
+.link-issue { display: flex; gap: .6rem; align-items: flex-end; flex-wrap: wrap; margin-top: .6rem; padding-top: .6rem; border-top: 1px dashed var(--line); }
+.link-issue .inline-select { flex: 1; min-width: 200px; font-size: .85rem; }
+.link-issue .inline-select select { width: 100%; }
+.link-issue .hint { flex-basis: 100%; margin: 0; }
+
+/* History by issue */
+.segmented { display: inline-flex; border: 2px solid var(--line); border-radius: 12px; overflow: hidden; align-self: flex-start; }
+.segmented button { padding: .5rem 1rem; border: 0; background: #fff; font: inherit; font-weight: 700; cursor: pointer; color: var(--ink-2); }
+.segmented button[aria-pressed="true"] { background: var(--primary); color: var(--primary-ink); }
+.segmented button:focus-visible { outline: 3px solid var(--ink); outline-offset: -3px; }
+.issue-item summary { cursor: pointer; display: grid; gap: .4rem; list-style-position: inside; }
+.issue-title { overflow-wrap: anywhere; }
+.issue-log { list-style: none; margin: 1rem 0 0; padding: 0; display: grid; gap: .8rem; }
+.issue-log li { border-left: 3px solid var(--line); padding-left: .8rem; }
+.issue-note { margin: .3rem 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }

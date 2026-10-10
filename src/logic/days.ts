@@ -23,7 +23,8 @@ const clean = (s: string) => s.trim();
 // ---------- goals ----------
 
 export function newGoal(title: string, now: number, extra: Partial<Goal> = {}): Goal {
-  return { id: uid(), title: clean(title), note: '', status: 'todo', focus: false, createdAt: now, doneAt: null, ...extra };
+  const g: Goal = { id: uid(), kind: 'own', title: clean(title), note: '', status: 'todo', focus: false, createdAt: now, doneAt: null, ...extra };
+  return { ...g, kind: g.source ? 'issue' : 'own' }; // kind always follows source, so the two can't disagree
 }
 
 export function addGoal(day: Day, title: string, now: number, extra: Partial<Goal> = {}): Day {
@@ -61,10 +62,119 @@ export function moveGoal(day: Day, id: string, dir: -1 | 1): Day {
   return { ...day, goals };
 }
 
-export const isUnfinished = (g: Goal) => g.status === 'todo' || g.status === 'in-progress';
+/** Like moveGoal, but swaps with the nearest item of the same kind, so reordering works within one list on screen. */
+export function moveWithinKind(day: Day, id: string, dir: -1 | 1): Day {
+  const i = day.goals.findIndex((g) => g.id === id);
+  if (i < 0) return day;
+  const kind = day.goals[i].kind;
+  let j = i + dir;
+  while (j >= 0 && j < day.goals.length && day.goals[j].kind !== kind) j += dir;
+  if (j < 0 || j >= day.goals.length) return day;
+  const goals = [...day.goals];
+  [goals[i], goals[j]] = [goals[j], goals[i]];
+  return { ...day, goals };
+}
+
+export const isUnfinished =(g: Goal) => g.status === 'todo' || g.status === 'in-progress';
 
 export function hasSource(day: Day, s: Pick<GoalSource, 'repo' | 'number'>): boolean {
   return day.goals.some((g) => g.source && g.source.repo === s.repo && g.source.number === s.number);
+}
+
+// ---------- issues ----------
+
+type IssueRef = Pick<GoalSource, 'repo' | 'number'>;
+const sameIssue = (a: IssueRef | undefined, b: IssueRef) => !!a && a.repo === b.repo && a.number === b.number;
+
+/** Puts an issue on a day. An issue appears at most once per day; adding it again changes nothing. */
+export function addIssueItem(day: Day, source: GoalSource, title: string, now: number): Day {
+  if (hasSource(day, source)) return day;
+  return addGoal(day, title, now, { source });
+}
+
+/**
+ * Turns an own item into a note on a GitHub issue. If the issue is already on that day, the item's text is appended
+ * to that issue's note and the own item is removed; otherwise the own item becomes the issue item in place.
+ */
+export function linkToIssue(day: Day, id: string, source: GoalSource): Day {
+  const own = day.goals.find((g) => g.id === id);
+  if (!own || own.kind !== 'own') return day;
+  const existing = day.goals.find((g) => sameIssue(g.source, source));
+  if (!existing) return updateGoal(day, id, { kind: 'issue', source });
+  const text = [own.title, own.note].filter(Boolean).join(' — ');
+  const note = [existing.note, text].filter(Boolean).join('\n');
+  return removeGoal(updateGoal(day, existing.id, { note }), id);
+}
+
+/**
+ * Records what GitHub last said about an issue, on one day (`onlyDate`) or every day it appears. The app passes today,
+ * so past days keep the state they were saved with. Never changes a goal's status.
+ */
+export function setIssueState(d: AppData, ref: IssueRef, state: 'open' | 'closed', onlyDate?: string): AppData {
+  const stale = (g: Goal) => sameIssue(g.source, ref) && g.source?.state !== state;
+  const days: Record<string, Day> = {};
+  let changed = false;
+  for (const [date, day] of Object.entries(d.days)) {
+    if ((onlyDate && date !== onlyDate) || !day.goals.some(stale)) {
+      days[date] = day;
+      continue;
+    }
+    changed = true;
+    days[date] = { ...day, goals: day.goals.map((g) => (stale(g) ? { ...g, source: { ...(g.source as GoalSource), state } } : g)) };
+  }
+  return changed ? { ...d, days } : d;
+}
+
+export interface IssueLogEntry {
+  date: string;
+  goalId: string;
+  title: string;
+  status: GoalStatus;
+  note: string;
+  carriedFrom?: string;
+}
+
+/** Every day an issue appears on, oldest first, with that day's note. */
+export function issueLog(d: Pick<AppData, 'days'>, ref: IssueRef): IssueLogEntry[] {
+  const out: IssueLogEntry[] = [];
+  for (const date of Object.keys(d.days).sort()) {
+    for (const g of d.days[date].goals) {
+      if (sameIssue(g.source, ref)) out.push({ date, goalId: g.id, title: g.title, status: g.status, note: g.note, carriedFrom: g.carriedFrom });
+    }
+  }
+  return out;
+}
+
+export interface IssueSummary {
+  source: GoalSource;
+  title: string;
+  days: number;
+  firstDate: string;
+  lastDate: string;
+  lastStatus: GoalStatus;
+  notes: number; // days that have a non-empty note
+}
+
+/** Every issue that appears in the history, most recently worked first. Title and link are from the latest day. */
+export function issueIndex(d: Pick<AppData, 'days'>): IssueSummary[] {
+  const map = new Map<string, IssueSummary>();
+  for (const date of Object.keys(d.days).sort()) {
+    for (const g of d.days[date].goals) {
+      if (!g.source) continue;
+      const key = `${g.source.repo}#${g.source.number}`;
+      const prev = map.get(key);
+      map.set(key, {
+        source: g.source,
+        title: g.title,
+        days: (prev?.days ?? 0) + 1,
+        firstDate: prev?.firstDate ?? date,
+        lastDate: date,
+        lastStatus: g.status,
+        notes: (prev?.notes ?? 0) + (g.note.trim() ? 1 : 0),
+      });
+    }
+  }
+  return [...map.values()].sort((a, b) => (a.lastDate < b.lastDate ? 1 : a.lastDate > b.lastDate ? -1 : a.title.localeCompare(b.title)));
 }
 
 // ---------- carry over ----------

@@ -205,7 +205,7 @@ export function safeUrl(u: string): string | null {
   return /^https?:\/\//i.test(u) ? u : null;
 }
 
-export const issueSource = (i: GhIssue): GoalSource => ({ type: 'github', repo: i.repo, number: i.number, url: i.url });
+export const issueSource = (i: GhIssue): GoalSource => ({ type: 'github', repo: i.repo, number: i.number, url: i.url, state: i.closedAt ? 'closed' : 'open' });
 
 type NewHighlight = Omit<Highlight, 'id'>;
 
